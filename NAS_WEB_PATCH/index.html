@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="扫码拍照" />
+  <meta name="theme-color" content="#1565C0" />
+  <title>Pack质检拍照</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <link rel="stylesheet" href="/style.css?v=29" />
+</head>
+<body>
+  <!-- 单屏：全屏相机 + 覆盖层（识别/拍照共用同一摄像头） -->
+  <section id="screen-main" class="main">
+    <video id="cam" playsinline muted></video>
+    <div id="flash" class="flash-anim"></div>
+
+    <!-- 顶部覆盖栏 -->
+    <header class="topbar">
+      <div class="top-row">
+        <div class="conn-wrap"><span id="connDot" class="dot"></span><span id="connStatus" class="conn">连接中…</span></div>
+        <div class="switches">
+          <label class="sw-inline" title="拍一张立即传一张">
+            <span>实时上传</span>
+            <button id="btnRealtime" class="switch sm" role="switch" aria-checked="false"><span class="knob"></span></button>
+          </label>
+          <label class="sw-inline" title="可选增强模式：对准追溯码持续后台识别（默认关，省电不发烫）">
+            <span>自动识别</span>
+            <button id="btnAutoScan" class="switch sm" role="switch" aria-checked="false"><span class="knob"></span></button>
+          </label>
+          <label class="sw-inline" title="照片底部烧入追溯码/拍摄者/工位/时间水印">
+            <span>水印</span>
+            <button id="btnWatermark" class="switch sm" role="switch" aria-checked="true"><span class="knob"></span></button>
+          </label>
+        </div>
+      </div>
+      <div class="chip-row">
+        <button id="whoChip" class="chip">拍摄者：—</button>
+        <button id="stationChip" class="chip">工位：—</button>
+        <button id="codeChip" class="chip code" title="点击复制追溯码">追溯码：未识别</button>
+        <button id="btnNewQr" class="chip ghost">更换追溯码</button>
+        <a class="chip ghost" href="/gallery.html">查询照片</a>
+      </div>
+    </header>
+
+    <!-- 手电筒（常驻，暗光可用） -->
+    <button id="btnTorch" class="float-torch" aria-label="手电筒">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 2h10v3l-3.5 4v11a1.5 1.5 0 0 1-3 0V9L7 5V2zm2 2v.35L11.5 8v12h1V8L15 4.35V4H9z"/></svg>
+    </button>
+
+    <!-- 实时上传状态 -->
+    <div id="rtStatus" class="rt-status"></div>
+
+    <!-- 取景框引导（仅在识别模式显示） -->
+    <div id="scanFrame" class="scan-frame">
+      <div class="scan-box"><div class="scan-line"></div></div>
+      <div class="scan-tip" id="scanTip">对准追溯码直接拍照即可自动识别；或点「识别追溯码」手动触发（后台解码，不发烫）</div>
+      <div class="zoom-ctrl">
+        <button id="btnZoomIn" class="zoom-btn" aria-label="放大">＋</button>
+        <button id="btnZoomOut" class="zoom-btn" aria-label="缩小">－</button>
+      </div>
+      <div class="scan-actions">
+        <button id="btnManual" class="btn ghost sm">手动输入追溯码</button>
+        <button id="btnOcr" class="btn ghost sm">OCR识别追溯码</button>
+      </div>
+    </div>
+
+    <!-- 缩略条（可收起；实时上传时自动隐去） -->
+    <div id="thumbsWrap" class="thumbs-wrap">
+      <button id="thumbsToggle" class="thumbs-toggle">📷 <span id="thumbsCount">0</span> 张 <span id="thumbsCaret">▴</span></button>
+      <div id="thumbs" class="thumb-strip"></div>
+    </div>
+
+    <!-- 底部常驻操作栏：竖屏为网格（换追溯码在识别上方 / 计数在上传上方）；横屏为 识别|快门|上传 横排 -->
+    <div id="mainBar" class="capture-bar">
+      <button id="btnNewQr2" class="bar-btn newqr2" aria-label="更换追溯码">更换追溯码</button>
+      <div id="countBadge" class="count-badge"><b id="photoCount">0</b>/20</div>
+      <button id="btnScan" class="bar-btn" aria-label="识别追溯码">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 5h4V3H3v2zm0 16h4v-2H3v2zm14-16h4V3h-4v2zm0 16h4v-2h-4v2zM7 7h10v10H7V7zm2 2v6h6V9H9z"/></svg>
+        <span>识别追溯码</span>
+      </button>
+      <button id="btnShoot" class="btn shoot" aria-label="拍照">
+        <svg class="shutter-ring" viewBox="0 0 76 76">
+          <circle class="ring-bg" cx="38" cy="38" r="34"></circle>
+          <circle id="ringFg" class="ring-fg" cx="38" cy="38" r="34"></circle>
+        </svg>
+        <span class="shoot-core"></span>
+      </button>
+      <button id="btnUpload" class="bar-btn upload" disabled>
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 3l5 5h-3v6h-4V8H7l5-5zM5 18h14v2H5v-2z"/></svg>
+        <span id="uploadLabel">上传</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- 拍摄者输入弹层 -->
+  <div id="whoModal" class="modal">
+    <div class="modal-card">
+      <h3>填写基础信息</h3>
+      <input id="photographer" type="text" placeholder="请输入您的姓名" autocomplete="name" />
+      <input id="workstation" type="text" placeholder="拍摄工位，如：高压拧紧" />
+      <p class="hint">基础信息会写入照片的文件名、水印与日志，可在顶栏点「拍摄者 / 工位」修改。</p>
+      <button id="btnWhoOk" class="btn primary block">确定</button>
+    </div>
+  </div>
+
+  <!-- 手动输入弹层 -->
+  <div id="manualModal" class="modal">
+    <div class="modal-card">
+      <h3>手动输入追溯码</h3>
+      <input id="manualInput" type="text" placeholder="输入条码下方的数字/字母" />
+      <div class="modal-actions">
+        <button id="btnManualCancel" class="btn ghost">取消</button>
+        <button id="btnManualOk" class="btn primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通用确认弹层（删除 / 放弃本组） -->
+  <div id="confirmModal" class="modal">
+    <div class="modal-card">
+      <h3 id="confirmTitle">确认</h3>
+      <p id="confirmMsg" class="hint"></p>
+      <div class="modal-actions">
+        <button id="confirmCancel" class="btn ghost">取消</button>
+        <button id="confirmOk" class="btn danger">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 定格识别弹层：拍一张固定在页面上供识别（可看清拍到了什么，失败可原地重拍） -->
+  <div id="freezeModal" class="modal">
+    <div class="modal-card freeze-card">
+      <h3>定格识别</h3>
+      <div class="freeze-img-wrap"><img id="freezeImg" alt="定格画面" /></div>
+      <p id="freezeTip" class="hint">识别中…</p>
+      <div class="modal-actions">
+        <button id="btnFreezeRetry" class="btn ghost">重新拍摄</button>
+        <button id="btnFreezeManual" class="btn ghost">手动输入</button>
+        <button id="btnFreezeClose" class="btn primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"><span id="toastMsg"></span><button id="toastBtn" class="toast-btn"></button></div>
+
+  <script src="/lib/jsqr.js"></script>
+  <script src="/lib/zxing.js"></script>
+  <script src="/lib/tesseract/tesseract.min.js"></script>
+  <script src="/app.js?v=29"></script>
+</body>
+</html>
