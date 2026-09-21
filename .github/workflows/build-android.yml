@@ -1,0 +1,41 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: npm install
+
+      # NAS 地址：在仓库 Settings → Secrets → Actions 里添加变量 CAP_NAS_URL（形如 http://192.168.1.50:3080）
+      - name: Add Android platform
+        run: npx cap add android
+        env:
+          CAP_NAS_URL: ${{ secrets.CAP_NAS_URL || 'http://10.0.0.10:3080' }}
+
+      - name: Sync native
+        run: npx cap sync android
+        env:
+          CAP_NAS_URL: ${{ secrets.CAP_NAS_URL || 'http://10.0.0.10:3080' }}
+
+      - name: Build debug APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-uploader-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
