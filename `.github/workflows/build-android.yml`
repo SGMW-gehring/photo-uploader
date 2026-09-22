@@ -1,0 +1,63 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install deps
+        run: npm install
+
+      # Capacitor 8 的安卓模块要求 Java 21（runner 默认 17，会报 invalid source release: 21）
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # 把 ML Kit 插件的浏览器版脚本拷进 www，启动页才能直接调用原生扫码
+      - name: 拷贝 ML Kit 插件脚本
+        run: cp node_modules/@capacitor-mlkit/barcode-scanning/dist/plugin.js www/mlkit-plugin.js
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      # Capacitor 默认不声明相机权限，扫码会失败（必须显式加入 Manifest）
+      - name: 添加相机权限
+        run: |
+          python3 - <<'EOF'
+          import re
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          if 'android.permission.CAMERA' not in s:
+              s = re.sub(r'(<manifest[^>]*>)',
+                         r'\1\n    <uses-permission android:name="android.permission.CAMERA" />\n'
+                         r'    <uses-feature android:name="android.hardware.camera" android:required="false" />',
+                         s, count=1)
+              open(p, 'w', encoding='utf-8').write(s)
+          print(open(p, encoding='utf-8').read()[:900])
+          EOF
+
+      - name: Sync native
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-uploader-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
