@@ -182,8 +182,15 @@
 
     try {
       var st = await B.checkPermissions();
-      if (!st || st.camera !== 'granted') { await B.requestPermissions(); }
-    } catch (e) {}
+      if (!st || st.camera !== 'granted') {
+        var pr = await B.requestPermissions();
+        if (pr && pr.camera && pr.camera !== 'granted') {
+          await stopScan();
+          setStatus('相机权限被拒绝：请在系统设置 → 应用 → 照片追溯上传 → 权限里允许相机', 'bad');
+          return;
+        }
+      }
+    } catch (e) { /* 部分设备默认已授权，继续尝试 */ }
 
     setStatus('相机启动中…');
     document.body.classList.add('scanning');
@@ -200,14 +207,16 @@
     } catch (e) { /* 部分版本无事件支持，忽略 */ }
 
     try {
+      // v31：只传 formats。@capacitor-mlkit 的 lensFacing 枚举校验严格（'BACK' ≠ 'Back' 会直接抛错），
+      // resolution 不是本插件的参数；缺省即为后置摄像头，不再额外传参
       await B.startScan({
-        formats: ['CODE_128', 'CODE_39', 'CODE_93', 'QR_CODE', 'DATA_MATRIX', 'EAN_13', 'EAN_8', 'ITF', 'PDF_417', 'UPC_A', 'UPC_E', 'AZTEC', 'CODABAR'],
-        lensFacing: 'BACK',
-        resolution: 2 // 1920x1080，比默认 720p 更容易识别小码
+        formats: ['CODE_128', 'CODE_39', 'CODE_93', 'QR_CODE', 'DATA_MATRIX', 'EAN_13', 'EAN_8', 'ITF', 'PDF_417', 'UPC_A', 'UPC_E', 'AZTEC', 'CODABAR']
       });
     } catch (e) {
       await stopScan();
-      setStatus('扫码启动失败：' + (e && e.message ? e.message : e), 'bad');
+      var d = (e && (e.message || e.toString())) || String(e);
+      try { if (e && e.data) d += ' | ' + JSON.stringify(e.data); } catch (x) {}
+      setStatus('扫码启动失败：' + d + '（可先用「手动填写追溯码」）', 'bad');
     }
   }
 

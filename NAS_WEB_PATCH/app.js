@@ -147,11 +147,14 @@
   // ---------- 摄像头 ----------
   async function startCamera() {
     stopCamera();
-    if (!window.isSecureContext) {
-      throw new Error('页面不是安全上下文，请用 https:// 访问（不能用 http）');
-    }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('该浏览器不支持摄像头（请换 Chrome / Safari，且用 https 打开）');
+    // v31：App 原生壳经 http 直连时 WebView 是非安全源，不暴露 navigator.mediaDevices，
+    // 网页相机整体不可用 → 标记 noWebcam，拍照改走系统相机、扫码改走原生引擎
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.isSecureContext) {
+      state.noWebcam = true;
+      setupNoWebcamUI();
+      throw new Error(inShell()
+        ? '原生模式：网页相机不可用，拍照与扫码已切换为原生通道'
+        : '当前为 http 页面，网页相机不可用：请用 https:// 访问，或使用 App');
     }
     const tries = [
       // v27：ideal 降到 1920x1440（4:3 传感器全幅视野）。过高的 ideal（3000x2000）在部分
@@ -204,6 +207,156 @@
       state.stream = null;
     }
     if (cam) cam.srcObject = null;
+  }
+
+  // ---------- v31：原生壳兜底（无网页相机时的扫码/拍照通道） ----------
+  function inShell() {
+    try {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BarcodeScanner) return true;
+      return new URLSearchParams(location.search).get('shell') === '1';
+    } catch (e) { return false; }
+  }
+
+  function setupNoWebcamUI() {
+    try {
+      ['btnTorch', 'btnZoomIn', 'btnZoomOut'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      const camEl = document.getElementById('cam');
+      if (camEl && camEl.parentElement && !document.getElementById('noCamTip')) {
+        const tip = document.createElement('div');
+        tip.id = 'noCamTip';
+        tip.style.cssText = 'position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;text-align:center;color:#8b93a5;font-size:14px;padding:0 24px;line-height:1.9;';
+        tip.innerHTML = inShell()
+          ? '原生模式：按 <b>拍照键</b> 调用系统相机拍摄<br>追溯码用 App 启动页扫码，或按「识别追溯码」'
+          : '当前浏览器不支持网页相机<br>请用 https:// 访问，或使用 App';
+        camEl.parentElement.appendChild(tip);
+      }
+    } catch (e) {}
+  }
+
+  // 原生扫码（startScan + 事件监听，CameraX 路径不依赖 GMS），单次识别后自动停止
+  function nativeScanOnce() {
+    const B = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BarcodeScanner;
+    if (!B) return Promise.resolve(null);
+    const formats = ['CODE_128','CODE_39','CODE_93','QR_CODE','DATA_MATRIX','EAN_13','EAN_8','ITF','PDF_417','UPC_A','UPC_E','AZTEC','CODABAR'];
+    return new Promise((resolve) => {
+      let handle = null, done = false;
+      const finish = (code) => {
+        if (done) return;
+        done = true;
+        try { const r = B.stopScan(); if (r && r.catch) r.catch(() => {}); } catch (e) {}
+        try { if (handle && handle.remove) handle.remove(); } catch (e) {}
+        resolve(code || null);
+      };
+      B.addListener('barcodeScanned', (res) => {
+        const b = res && (res.barcode || (res.barcodes && res.barcodes[0]));
+        const code = b && (b.rawValue || b.displayValue || b.value);
+        if (code) finish(String(code).trim());
+      }).then((h) => {
+        handle = h;
+        if (!done) {
+          const p = B.startScan({ formats });
+          if (p && p.catch) p.catch(() => finish(null));
+        }
+      }).catch(() => finish(null));
+      // 兜底：个别版本 addListener 不返回 promise，稍后自行启动
+      setTimeout(() => {
+        if (!done && !handle) {
+          const p = B.startScan({ formats });
+          if (p && p.catch) p.catch(() => {});
+        }
+      }, 500);
+      setTimeout(() => finish(null), 120000);
+    });
+  }
+
+  // 系统相机拍一张（WebView 文件选择器，http 下同样可用）→ 回填到拍照管线
+  let _fileCapture = null;
+  function ensureFileInput() {
+    if (_fileCapture) return _fileCapture;
+    _fileCapture = document.createElement('input');
+    _fileCapture.type = 'file';
+    _fileCapture.accept = 'image/*';
+    try { _fileCapture.capture = 'environment'; } catch (e) {}
+    _fileCapture.style.display = 'none';
+    document.body.appendChild(_fileCapture);
+    _fileCapture.addEventListener('change', async () => {
+      const f = _fileCapture.files && _fileCapture.files[0];
+      _fileCapture.value = '';
+      if (f) await shootFromFile(f);
+    });
+    return _fileCapture;
+  }
+
+  // 原生相机拍照（Capacitor Camera 插件）：彻底绕过 WebView 在 http(3080) 非安全源下禁用网页相机的问题。
+  // 返回 true=已成功拍并落库；false=插件不可用 / 用户取消 / 异常（调用方回退到系统相机文件选择器）。
+  async function nativeCameraCapture() {
+    const C = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera;
+    if (!C || !C.getPhoto) return false;
+    try {
+      const photo = await C.getPhoto({
+        quality: 90,
+        allowEditing: false,
+        correctOrientation: true,
+        saveToGallery: false,
+        resultType: 'uri',
+        source: 'camera',
+      });
+      const uri = photo && (photo.webPath || photo.path);
+      if (!uri) return false;
+      const blob = await (await fetch(uri)).blob();
+      const file = new File([blob], 'p' + Date.now() + '.jpg', { type: blob.type || 'image/jpeg' });
+      await shootFromFile(file);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function shootFromFile(file) {
+    if (!validQr()) { toast('请先识别追溯码，再拍摄照片'); return; }
+    let img;
+    try {
+      img = new Image();
+      img.src = URL.createObjectURL(file);
+      await img.decode();
+    } catch (e) { toast('照片读取失败，请重试'); return; }
+    const scale = Math.min(1, 4096 / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round((img.naturalWidth || 1) * scale);
+    canvas.height = Math.round((img.naturalHeight || 1) * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    try { URL.revokeObjectURL(img.src); } catch (e) {}
+    await addCapturedPhoto(canvas);
+  }
+
+  // 从画布出片（原 shoot 后半段抽取，实时流与系统相机共用同一落库/上传管线）
+  async function addCapturedPhoto(canvas) {
+    const seq = ++state.seq;
+    const qrForMark = state.qr;
+    if (state.watermark) drawWatermark(canvas, seq, qrForMark);
+    shutterFeedback();
+    const blob = await encodeJpeg(canvas, 1 * 1024 * 1024, 2 * 1024 * 1024);
+    if (!blob) { toast('拍照失败，请重试'); return; }
+    const thumb = await makeThumb(canvas, 320); // 随照片上传，供检索页缩略图网格
+    const url = URL.createObjectURL(blob);
+    const p = { blob, url, thumb, capturedAt: new Date().toISOString(), seq, qr: qrForMark, photographer: state.photographer, workstation: state.workstation, uploaded: false, uploading: false, failed: false, dbId: null };
+    // 离线持久化：拍照即落 IndexedDB，刷新/关页后未上传照片也能恢复
+    if (DB.available) {
+      const rec = {
+        id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+        qr: qrForMark, photographer: state.photographer, workstation: state.workstation, capturedAt: p.capturedAt, seq, blob, thumb, uploaded: false, serverPath: '',
+      };
+      DB.put(rec).then((r) => { p.dbId = r.id; }).catch(() => {});
+    }
+    state.photos.push(p);
+    renderThumbs(true);
+    const f = $('flash');
+    f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+    // 实时上传：已识别立即传
+    if (state.realtime) uploadOne(p);
   }
 
   async function toggleTorch() {
@@ -500,7 +653,19 @@
   function hideFreeze() { hideModal('freezeModal'); }
 
   async function snapScan() {
-    if (!cam.videoWidth) { toast('摄像头未就绪，请稍候'); return; }
+    // v31：无网页相机 → 壳内走原生扫码引擎；普通浏览器给出明确指引
+    if (state.noWebcam || !cam.videoWidth) {
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BarcodeScanner) {
+        toast('调用手机原生扫码…');
+        const t = await nativeScanOnce();
+        if (t) { onBarcode(t); } else { toast('未识别到条码，可点「手动输入追溯码」'); }
+      } else if (inShell()) {
+        toast('原生扫码组件未注入：请回 App 启动页点「开始扫码」');
+      } else {
+        toast('当前环境无相机：请用 App 打开，或浏览器以 https:// 访问');
+      }
+      return;
+    }
     // 原生壳内：优先用手机原生引擎扫码（ML Kit / Vision），一步到位
     if (window.Capacitor && window.Capacitor.isPluginAvailable && window.Capacitor.isPluginAvailable('BarcodeScanner')) {
       toast('调用手机原生扫码…');
@@ -734,6 +899,18 @@
   }
 
   async function shoot() {
+    // v31/v33：无网页相机（原生壳 http 直连）→ 优先原生相机插件，失败回退系统相机文件选择器
+    if (state.noWebcam) {
+      if (!validQr()) { toast('请先识别追溯码'); return; }
+      if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera) {
+        toast('打开相机…');
+        const ok = await nativeCameraCapture();
+        if (ok) return;
+        // 插件不可用 / 用户取消 → 回退到系统相机文件选择器
+      }
+      ensureFileInput().click();
+      return;
+    }
     if (!cam.videoWidth) { toast('摄像头未就绪，请稍候'); return; }
     // 硬锁定：没有有效追溯码禁止拍照（杜绝「未识别/null」照片）。
     // 没码时点快门 = 触发一次识别；识别到码后再次点快门才真正拍摄。
@@ -742,34 +919,11 @@
       if (cam.videoWidth) snapScan();
       return;
     }
-    const seq = ++state.seq;
-
     // —— 即时抓拍 + 水印（追溯码此时必已存在）——
     const canvas = document.createElement('canvas');
     canvas.width = cam.videoWidth; canvas.height = cam.videoHeight;
     canvas.getContext('2d').drawImage(cam, 0, 0);
-    const qrForMark = state.qr;
-    if (state.watermark) drawWatermark(canvas, seq, qrForMark);
-    shutterFeedback();
-    const blob = await encodeJpeg(canvas, 1 * 1024 * 1024, 2 * 1024 * 1024);
-    if (!blob) { toast('拍照失败，请重试'); return; }
-    const thumb = await makeThumb(canvas, 320); // 随照片上传，供检索页缩略图网格
-    const url = URL.createObjectURL(blob);
-    const p = { blob, url, thumb, capturedAt: new Date().toISOString(), seq, qr: qrForMark, photographer: state.photographer, workstation: state.workstation, uploaded: false, uploading: false, failed: false, dbId: null };
-    // 离线持久化：拍照即落 IndexedDB，刷新/关页后未上传照片也能恢复
-    if (DB.available) {
-      const rec = {
-        id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        qr: qrForMark, photographer: state.photographer, workstation: state.workstation, capturedAt: p.capturedAt, seq, blob, thumb, uploaded: false, serverPath: '',
-      };
-      DB.put(rec).then((r) => { p.dbId = r.id; }).catch(() => {});
-    }
-    state.photos.push(p);
-    renderThumbs(true);
-    const f = $('flash');
-    f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
-    // 实时上传：已识别立即传
-    if (state.realtime) uploadOne(p);
+    await addCapturedPhoto(canvas);
   }
 
   // 拍照后仍未识别：后台异步跑一次更重的多方向解码（不阻塞继续拍照），命中则回填芯片与记录。
@@ -1198,7 +1352,8 @@
   startCamera().catch((e) => {
     const tip = (e && e.name === 'NotAllowedError') ? '摄像头权限被拒绝，请在浏览器地址栏允许后重试'
       : (e && e.name === 'NotFoundError') ? '未检测到摄像头'
-      : '无法访问摄像头：' + (e && e.message);
+      : (e && e.name === 'TypeError') ? '无法访问摄像头：' + (e && e.message)
+      : (e && e.message) || '无法访问摄像头';
     toast(tip);
   });
   if (!state.photographer) openWhoModal();

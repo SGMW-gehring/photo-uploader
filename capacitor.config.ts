@@ -25,6 +25,8 @@ const config: CapacitorConfig = {
   plugins: {
     // ML Kit 条码扫描：App 本地页调用 startScan（CameraX + ML Kit 本地模型，不依赖 Google Play 服务）
     BarcodeScanner: {},
+    // 原生相机：上传页拍照走原生通道，绕过 WebView 在非安全源(http 3080)下禁用网页相机的限制
+    Camera: {},
   },
 };
 
