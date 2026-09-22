@@ -1,26 +1,29 @@
 import { CapacitorConfig } from '@capacitor/cli';
 
-// NAS 地址：构建前用环境变量覆盖，例如
-//   CAP_NAS_URL=http://192.168.1.50:3080 npx cap sync android
-// 默认走 3080（需在 server.js 开启 APP_HTTP=1，以 HTTP 直连绕开自签证书）
-const nas = process.env.CAP_NAS_URL || 'http://10.0.0.10:3080';
-
-function hostOf(u: string): string {
-  try { return new URL(u).host; } catch { return 'localhost'; }
-}
-
+// 说明（重要）：
+// 本 App 不再把 NAS 地址写死进安装包。启动页（www/index.html）由 App 本地加载，
+// 用户在 App 内填写/探测 NAS 地址，运行时跳转过去 —— 以后换 IP、加网段都不用重新打包。
+//
+// 关键点：
+// - 不设 server.url：加载本地 www（本地源才带 Capacitor 桥接，ML Kit 插件可用）
+// - allowNavigation: ['*']：允许 WebView 内跳转到任意 NAS 地址（Capacitor 用 HostMask，"*" 匹配任意 host）
+// - androidScheme 'http' + allowMixedContent：本地页访问 http://NAS 不会被混合内容拦截
 const config: CapacitorConfig = {
   appId: 'com.fnnas.photouploader',
   appName: '照片追溯上传',
   webDir: 'www',
-  // 远程加载 NAS 上的 Web 上传页；原生扫码由 @capacitor-mlkit/barcode-scanning 提供
   server: {
-    url: nas,
-    cleartext: true,        // 允许 http（3080 直连），Android 会设置 usesCleartextTraffic
-    allowNavigation: [hostOf(nas)], // 仅放行 NAS 域名，Capacitor 桥接才生效
+    androidScheme: 'http',
+    cleartext: true, // 允许 http（3080 直连），Android 会设置 usesCleartextTraffic
+    // '*' 让 WebView 能跳转到运行时的任意 NAS 地址；
+    // 再显式列出已知地址，Capacitor 才会把桥接 JS 注入该页面（上传页内也能直接用原生扫码）
+    allowNavigation: ['*', '192.168.31.10:3080'],
+  },
+  android: {
+    allowMixedContent: true,
   },
   plugins: {
-    // ML Kit 条码扫描：安卓走 Google ML Kit，iOS 走 Apple Vision
+    // ML Kit 条码扫描：App 本地页调用 startScan（CameraX + ML Kit 本地模型，不依赖 Google Play 服务）
     BarcodeScanner: {},
   },
 };

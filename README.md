@@ -1,71 +1,82 @@
-# 照片追溯上传 · 原生 App（Capacitor 壳 + ML Kit 扫码）
+# 照片追溯上传 · 原生 App v2（Capacitor 壳 + ML Kit 扫码 + 运行时改地址）
 
-把「扫码」交给手机原生引擎（安卓 ML Kit / iOS Vision，与 Google Lens、微信同款），
-扫码结果回填到 NAS 上的 Web 上传页。识别率远高于浏览器 ZXing，**独立图标、可装到桌面**。
+把「扫码」交给手机原生引擎（ML Kit，与 Google Lens 同款），识别率远高于浏览器 ZXing；
+上传页 UI、水印、上传逻辑全部复用 NAS 上已有的 Web 服务，**改 UI 不用重新打包 App**。
 
-> 本工程只做「原生壳 + 原生扫码」。上传页 UI、水印、上传逻辑全部复用 NAS 上已有的 Web 服务，
-> 改 UI 不用重新打包 App——只要在 NAS 上更新 Web 文件即可。
+## v2 相比 v1 的改动（重要）
 
----
-
-## 一、NAS 端要先改两处（一次性）
-
-1. **更新 Web 文件**：把本包 `NAS_WEB_PATCH/` 里的 `app.js`、`index.html` 覆盖到
-   `/vol1/1000/photo-uploader/public/`，然后飞牛 Docker **重建**该容器（前端烤进镜像，仅重启不生效）。
-   - 这两个文件已加入「检测到 Capacitor 原生壳时，优先用原生引擎扫码」的逻辑。
-2. **开启 App 直连模式**：在 docker-compose 的环境变量里加 `APP_HTTP=1`，让 3080 端口以 **HTTP 直接提供服务**
-   （绕开 NAS 自签证书，否则手机原生 WebView 会被证书拦死）。改完**重建**容器。
-
-验证：浏览器打开 `http://NAS的IP:3080` 能正常进上传页，即配置成功。
+| 项目 | v1 | **v2** |
+|---|---|---|
+| NAS 地址 | 构建时写死进 APK | **App 内可随时改**（自动探测 / 搜索网段 / 手填），换 IP 不用重新打包 |
+| 扫码入口 | 上传页里点「识别追溯码」 | **启动页点「开始扫码」**（原生 CameraX + ML Kit 本地模型） |
+| Google 服务依赖 | 用插件现成扫码 UI（依赖 Google Play 服务，国产手机不可用） | **改用 `startScan`**，不依赖 Google Play 服务 |
+| 相机权限 | 未声明（会失败） | 构建时自动写入 Manifest |
 
 ---
 
-## 二、Android：GitHub Actions 云端出 APK（无需本机装任何开发环境）
+## 一、NAS 端（一次性）
 
-1. 把本工程（`photo-uploader-app/` 整个目录）推到你的 **GitHub 仓库**（免费账号即可）。
-2. 仓库里添加变量：
-   - `Settings → Secrets and variables → Actions → Variables → New repository variable`
-   - 名称 `CAP_NAS_URL`，值 `http://你的NAS的IP:3080`（例如 `http://192.168.1.50:3080`）
-3. `Actions → Build Android APK → Run workflow`。
-4. 构建完在 `Artifacts` 里下载 `photo-uploader-debug-apk`（debug 签名，个人侧载完全够用，免签名证书）。
-5. 手机「设置 → 安全 → 安装未知应用」允许浏览器/文件管理器，点 APK 安装。桌面即出现「照片追溯上传」图标。
+1. **更新 Web 文件**：把 `NAS_WEB_PATCH/` 里的 `app.js`、`index.html` 覆盖到
+   `/vol1/1000/photo-uploader/public/`，然后飞牛 Docker **重建**容器（前端烤进镜像，仅重启不生效）。
+2. **开启 App 直连**：docker-compose 环境变量加 `APP_HTTP=1`，让 **3080 以 HTTP 直接提供服务**
+   （绕开自签证书，否则原生 WebView 会被证书拦死）。改完**重建**容器。
 
-> 以后 Web 上传页改了，只在 NAS 上更新文件，**重装 App 不是必须**；只有改了原生扫码逻辑才需重新跑 Actions。
+验证：浏览器打开 `http://NAS的IP:3080` 能直接进上传页（不跳转到 3000）即成功。
 
 ---
 
-## 三、iOS：Codemagic 云端出 IPA + 侧载（需要 Apple ID）
+## 二、Android：GitHub Actions 云端出 APK
 
-iOS 没有「免电脑装真机」的通道，必须走这条路：
+1. 把本工程推到 GitHub 仓库（免费账号即可）。
+2. `Actions → Build Android APK → Run workflow`（提交代码也会自动触发）。
+3. 构建完在 `Artifacts` 下载 `photo-uploader-debug-apk`，解压得 APK，装到手机
+   （需先在「设置 → 安装未知应用」放行）。
 
-1. 注册 [codemagic.com](https://codemagic.io)（免费额度足够），关联你的 GitHub 仓库。
-2. 在 Codemagic 关联你的 **Apple ID**（免费开发者账号即可；Personal Account → Integrations → Apple Developer Portal）。
-3. 设置环境变量 `CAP_NAS_URL = http://你的NAS的IP:3080`，点 `Start new build`。
-4. 下载构建出的 `*.ipa`。
-5. 在**任意电脑**（Windows/Mac 都行）装 [Sideloadly](https://sideloadly.io) 或 [AltStore](https://altstore.io)，
-   用你的 Apple ID 把 IPA 侧载到 iPhone。
-   - 免费 Apple ID 签出的 App **每 7 天需重签一次**（Sideloadly 可一键重签，AltStore 在同源 WiFi 下可自动续期）。
+构建关键项（已在 workflow 里写好，别删）：
+- Node **22**（Capacitor CLI 要求 ≥22）
+- JDK **21**（Capacitor 8 安卓模块要求，用 17 会报 `invalid source release: 21`）
+- 拷贝 ML Kit 插件浏览器脚本：`node_modules/@capacitor-mlkit/barcode-scanning/dist/plugin.js → www/mlkit-plugin.js`
+- 注入相机权限到 `android/app/src/main/AndroidManifest.xml`
 
-> iOS 真机装包比安卓麻烦，这是 Apple 政策的硬限制，不是工程问题。若只想要「扫码识别率拉满」，
-> 安卓 App 已完全满足；iOS 可用上一版的「快捷指令扫码 → 打开上传页」方案作为平替。
+> 不需要任何 Secret/变量——地址在 App 里填。
 
 ---
 
-## 四、怎么工作的
+## 三、iOS（可选）
 
-- Capacitor 壳启动时加载 `http://NAS:3080`（由 `capacitor.config.ts` 的 `server.url` 决定）。
-- 用户点「识别追溯码」时，`app.js` 检测到 `Capacitor.Plugins.BarcodeScanner` 存在，
-  **直接调手机原生扫码 UI**（ML Kit / Vision），扫到后把码回填到追溯码框，流程继续走 Web 上传页。
-- 扫码失败才会回退到浏览器解码流水线（兜底，不影响主路径）。
+Codemagic 云端出 IPA + Sideloadly/AltStore 侧载，免费 Apple ID 每 7 天重签一次。
+若只追求扫码识别率，安卓 App 已完全够用；iOS 可用「快捷指令扫码 → 打开 `https://NAS:3000/?code=xxx`」平替。
 
-## 五、换图标（可选）
+---
 
-- Android：把图标放入 `android/app/src/main/res/mipmap-*` （`npx cap add android` 后生成），重跑 Actions。
-- iOS：在 Xcode（或 Codemagic 构建后）替换 `ios/App/App/Assets.xcassets/AppIcon.appiconset`。
-- 也可直接用在线工具（如 `appicon.co`）生成各尺寸后覆盖。
+## 四、App 使用方式
+
+1. 打开 App → 启动页会**自动检测**上次保存的 NAS 地址。
+2. 显示「已连接」→ 点 **开始扫码** → 相机打开，把条码放进取景框 → 识别成功**自动跳转上传页且追溯码已填好**。
+3. 若显示不通：
+   - 点 **自动探测**（试已保存过的所有地址）
+   - 或点 **搜索本网段**（自动扫本机 /24 网段的 3080 端口，找出 NAS）
+   - 或直接在地址栏手填 `http://NAS的IP:3080` 后点 **保存**
+4. 扫码实在失败时，可在启动页**手动输入追溯码**打开上传页。
+
+> 扫码请在**启动页**进行。若已进入上传页还想重新扫码，用手机返回键回到启动页即可。
+
+---
+
+## 五、怎么实现的（技术要点）
+
+- **不再用 `server.url`**：App 加载本地 `www/index.html`（本地源带 Capacitor 桥接，ML Kit 可用）。
+- `allowNavigation: ['*', '已知地址']`：`'*'` 让 WebView 能跳转任意运行时地址（Capacitor 用 HostMask，`*` 匹配任意 host）；
+  显式列出的地址会额外获得桥接 JS 注入。
+- `androidScheme: 'http'` + `allowMixedContent: true`：本地页访问 `http://NAS` 不被混合内容拦截。
+- 扫码用 **ML Kit 的 `startScan`**（CameraX 预览置于 WebView 下方 + 本地模型），**不需要 Google Play 服务**；
+  插件的 `scan()`（现成扫码界面）依赖 GMS，国产手机上不可用，已避开。
+- 探测用 `fetch(mode:'no-cors')`：能发出请求即视为该地址有服务，规避跨域/证书干扰。
+
+---
 
 ## 六、已知限制
 
-- iOS 出包依赖 Apple ID + 侧载工具，免费账号 7 天重签。
-- App 与 NAS 必须在同一局域网（或 NAS 可被手机路由访问）。
-- `APP_HTTP=1` 下 3080 为明文 HTTP，仅建议局域网内使用；如需加密，后续可给 NAS 配受信任证书后改回 HTTPS。
+- App 与 NAS 必须网络互通（同一 WiFi，或路由器放行）。
+- `APP_HTTP=1` 下 3080 为明文 HTTP，建议仅局域网使用；后续可配受信任证书后改回 HTTPS。
+- 改了 IP 后，上传页内不再有原生桥接（扫码走启动页即可），功能不受影响。
