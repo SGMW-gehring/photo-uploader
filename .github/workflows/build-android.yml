@@ -53,11 +53,11 @@ jobs:
       - name: Sync native
         run: npx cap sync android
 
-      # 版本号升到 2.0：手机「设置-应用信息」里看到 2.0 = 确认装的是新包
-      - name: 版本号升为 2.0
+      # 版本号升到 3.0（原生相机版）：手机「设置-应用信息」里看到 3.0 = 确认装的是新包
+      - name: 版本号升为 3.0
         run: |
-          sed -i 's/versionName "1.0"/versionName "2.0"/' android/app/build.gradle
-          sed -i 's/versionCode 1$/versionCode 2/' android/app/build.gradle
+          sed -i -E 's/versionName "[0-9.]+"/versionName "3.0"/' android/app/build.gradle
+          sed -i -E 's/versionCode [0-9]+/versionCode 3/' android/app/build.gradle
           grep -n "versionName\|versionCode" android/app/build.gradle
 
       - name: Build debug APK
